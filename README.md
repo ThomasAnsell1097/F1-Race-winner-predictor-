@@ -1,6 +1,6 @@
 # F1 Race Winner Predictor
 
-Predicts who will win the next Formula 1 race. It learns from past races since 2018 and looks at:
+Predicts who will win the next Formula 1 race. It learns from past races since 2014 and looks at:
 
 - **Grid position**: where each driver starts (from real qualifying once it's happened)
 - **Form**: average finish and points over each driver's last 5 races, and the team's last 10
@@ -29,7 +29,7 @@ Predict the next race:
 python f1_predictor.py
 ```
 
-The first run downloads about 8 seasons of results and weather, which takes a few minutes. After that the data is saved in `cache/`, so later runs are quick.
+The first run downloads about 12 seasons of results and weather, which takes a few minutes. After that the data is saved in `cache/`, so later runs are quick.
 
 Set the chance of rain yourself, for example when the race is too far away for a forecast:
 
@@ -49,7 +49,7 @@ Test how good it is. This trains on earlier seasons only, predicts every race of
 python f1_predictor.py --backtest 2025
 ```
 
-Other options: `--from 2014` to learn from more seasons, `--top 20` to show every driver.
+Other options: `--from 2018` to learn from recent seasons only, `--top 20` to show every driver.
 
 ## What you'll see
 
