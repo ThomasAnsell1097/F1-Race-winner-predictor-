@@ -51,17 +51,9 @@ python f1_predictor.py --backtest 2025
 
 Other options: `--from 2014` to learn from more seasons, `--top 20` to show every driver.
 
-## Example output
+## What you'll see
 
-```
-Las Vegas Grand Prix 2026  -  Las Vegas Strip Street Circuit, 2026-11-21
-  chance of rain: 10% (forecast)
-  temperature:    14°C
-  grid: not qualified yet, using each driver's average recent grid
-
-     Driver                 Grid  If dry  If wet   WIN %  rain skill
-   1 ...
-```
+A table of the top drivers with their grid slot, their win chance if the race is dry, if it's wet, and overall, plus their rain skill.
 
 ## How it works
 
