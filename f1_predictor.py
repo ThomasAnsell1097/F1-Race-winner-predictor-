@@ -45,15 +45,25 @@ FEATURES = [
 
 # ---------------------------------------------------------------- downloading
 
-def _get_json(url: str, params: dict, cache_name: str | None) -> dict:
+class QuotaUsedUp(Exception):
+    """The API's hourly or daily request limit has been reached."""
+
+
+def _get_json(url: str, params: dict, cache_name: str | None,
+              cache_only: bool = False) -> dict:
     """GET JSON, caching it on disk so reruns are quick and polite to the APIs."""
     path = CACHE / cache_name if cache_name else None
     if path and path.exists():
         return json.loads(path.read_text())
+    if cache_only:
+        raise QuotaUsedUp("not downloaded yet")
     for attempt in range(5):
         r = requests.get(url, params=params, timeout=30)
-        if r.status_code == 429:          # rate limited: back off and retry
-            time.sleep(2 ** attempt)
+        if r.status_code == 429:
+            reason = r.text[:200]
+            if "Daily" in reason or "Hourly" in reason:
+                raise QuotaUsedUp(reason)   # waiting a few seconds won't help
+            time.sleep(2 ** attempt)        # short-term limit: back off and retry
             continue
         r.raise_for_status()
         data = r.json()
@@ -132,12 +142,13 @@ def _hourly_window(hourly: dict, start: dt.datetime) -> pd.DataFrame:
     return h[(h["time"] >= s) & (h["time"] < s + pd.Timedelta(hours=RACE_HOURS))]
 
 
-def race_weather(lat: float, lon: float, date: str, time_utc: str) -> dict:
+def race_weather(lat: float, lon: float, date: str, time_utc: str,
+                 cache_only: bool = False) -> dict:
     """Actual rain (mm) and temperature during a past race."""
     data = _get_json(WEATHER_ARCHIVE, {
         "latitude": lat, "longitude": lon, "start_date": date, "end_date": date,
         "hourly": "precipitation,temperature_2m", "timezone": "GMT",
-    }, f"weather_{lat}_{lon}_{date}.json")
+    }, f"weather_{lat}_{lon}_{date}.json", cache_only)
     w = _hourly_window(data["hourly"], race_start(date, time_utc))
     return {"rain_mm": float(w["precipitation"].fillna(0).sum()),
             "temp": float(w["temperature_2m"].mean())}
@@ -146,14 +157,24 @@ def race_weather(lat: float, lon: float, date: str, time_utc: str) -> dict:
 def add_weather(df: pd.DataFrame) -> pd.DataFrame:
     races = df[["season", "round", "lat", "lon", "date", "time"]].drop_duplicates(["season", "round"])
     print(f"  weather for {len(races)} races...", file=sys.stderr)
-    out = []
+    out, quota_hit, missing = [], False, 0
     for r in races.itertuples():
-        try:
-            w = race_weather(r.lat, r.lon, r.date, r.time)
-        except Exception as e:          # weather missing: assume dry, mild
+        w = None
+        try:   # once the limit is hit, still use weather that's already saved
+            w = race_weather(r.lat, r.lon, r.date, r.time, cache_only=quota_hit)
+        except QuotaUsedUp:
+            quota_hit = True
+        except Exception as e:
             print(f"    no weather for {r.season} R{r.round}: {e}", file=sys.stderr)
+        if w is None:                   # weather missing: assume dry, mild
+            missing += 1
             w = {"rain_mm": 0.0, "temp": 22.0}
         out.append({"season": r.season, "round": r.round, **w})
+    if missing:
+        print(f"\n  WARNING: no weather for {missing} of {len(races)} races, so they count as dry."
+              + ("\n  Open-Meteo's free request limit was reached. Run again later (or tomorrow);"
+                 "\n  weather already downloaded is saved, so it carries on where it stopped."
+                 if quota_hit else ""), file=sys.stderr)
     df = df.merge(pd.DataFrame(out), on=["season", "round"])
     df["temp"] = df["temp"].fillna(22.0)
     df["is_wet"] = (df["rain_mm"] >= WET_MM).astype(float)
@@ -245,8 +266,9 @@ def build_features(df: pd.DataFrame) -> tuple[pd.DataFrame, History]:
 
 def make_model() -> HistGradientBoostingClassifier:
     return HistGradientBoostingClassifier(
-        max_iter=300, learning_rate=0.05, max_depth=4,
-        min_samples_leaf=30, l2_regularization=1.0, random_state=0)
+        # small and cautious: tested on 2021-2025, bigger models overfit
+        max_iter=150, learning_rate=0.03, max_depth=3,
+        min_samples_leaf=80, l2_regularization=5.0, random_state=0)
 
 
 def race_probs(model, X: pd.DataFrame, groups: pd.Series) -> np.ndarray:
@@ -298,8 +320,8 @@ def forecast_rain(lat: float, lon: float, date: str, time_utc: str) -> tuple[flo
             "latitude": lat, "longitude": lon, "start_date": date, "end_date": date,
             "hourly": "precipitation_probability,temperature_2m", "timezone": "GMT",
         }, None)
-    except requests.HTTPError:
-        return None   # race is too far ahead for a forecast
+    except (requests.HTTPError, QuotaUsedUp):
+        return None   # race too far ahead for a forecast, or the daily limit is used up
     w = _hourly_window(data["hourly"], race_start(date, time_utc))
     if w.empty or w["precipitation_probability"].isna().all():
         return None
@@ -385,8 +407,8 @@ def predict_next(df: pd.DataFrame, feats: pd.DataFrame, hist: History,
 
 def main(argv=None) -> None:
     ap = argparse.ArgumentParser(description="Predict the next F1 race winner.")
-    ap.add_argument("--from", dest="start", type=int, default=2018,
-                    help="first season to learn from (default 2018)")
+    ap.add_argument("--from", dest="start", type=int, default=2014,
+                    help="first season to learn from (default 2014)")
     ap.add_argument("--rain", type=float, default=None,
                     help="chance of rain in %%, e.g. --rain 60 (default: use the forecast)")
     ap.add_argument("--grid", default=None,
